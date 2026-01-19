@@ -478,6 +478,9 @@ jobs:
             local BINARY="$1"
             echo "Bundling libs for $BINARY"
             
+            # Ensure binary is writable for install_name_tool
+            chmod u+w "$BINARY"
+            
             # Ensure RPATH includes executable path so @rpath loads work
             install_name_tool -add_rpath "@executable_path" "$BINARY" 2>/dev/null || true
             
@@ -577,7 +580,7 @@ jobs:
           # Sign all dylibs and executables with entitlements
           find "$RELEASE_DIR" -type f \( -name "*.dylib" -o -perm +111 \) -print0 | while IFS= read -r -d '' file; do
               echo "Signing $file..."
-              codesign --force --deep --sign - --entitlements entitlements.plist "$file"
+              codesign --force --deep --sign - --entitlements entitlements.plist --options runtime --timestamp "$file"
           done
 
           echo "Collecting Licenses..."
