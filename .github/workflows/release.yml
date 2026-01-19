@@ -19,7 +19,7 @@ jobs:
       - name: Check for new stable QEMU version
         id: check
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           UPSTREAM_TAG=$(git ls-remote --tags --refs https://gitlab.com/qemu-project/qemu.git \
             | awk -F/ '{print $3}' \
@@ -28,7 +28,16 @@ jobs:
             | tail -n1)
           
           VERSION_NUM="${UPSTREAM_TAG#v}"
-          LOCAL_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "v0.0.0")
+          # Fetch latest release tag, surfacing errors if it fails
+          if ! LOCAL_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName'); then
+             echo "Warning: Failed to fetch local release tag. Defaulting to v0.0.0"
+             LOCAL_TAG="v0.0.0"
+          fi
+          
+          # Handle empty result if command succeeds but finds no releases
+          if [ -z "$LOCAL_TAG" ]; then
+             LOCAL_TAG="v0.0.0"
+          fi
 
           echo "Local Tag determined as: $LOCAL_TAG"
           echo "Upstream Tag: $UPSTREAM_TAG"
@@ -41,10 +50,29 @@ jobs:
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
 
-  build-and-release-windows:
+  download-source:
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download QEMU Source
+        env:
+          VERSION: ${{ needs.check-version.outputs.version_num }}
+        run: |
+          URL="https://download.qemu.org/qemu-${VERSION}.tar.xz"
+          wget -q "$URL" -O qemu-source.tar.xz
+
+      - name: Upload Source Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-source
+          path: qemu-source.tar.xz
+          retention-days: 1
+
+  build-and-release-windows:
+    needs: [check-version, download-source]
+    if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-2022
     defaults:
       run:
         shell: msys2 {0}
@@ -79,6 +107,12 @@ jobs:
           key: ccache-mingw64-${{ github.sha }}
           restore-keys: ccache-mingw64-
 
+      - name: Download Source Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: qemu-source
+          path: .
+
       - name: Download and Configure
         id: build-prep
         env:
@@ -94,8 +128,7 @@ jobs:
           export CC="ccache gcc"
           export CXX="ccache g++"
 
-          URL="https://download.qemu.org/qemu-${VERSION}.tar.xz"
-          wget -q "$URL" -O qemu-source.tar.xz
+          # Source downloaded from artifact
           
           tar -xf qemu-source.tar.xz --exclude="*/roms/*" --exclude="*/tests/lcitool/*" || echo "Tar warning: Symlinks failed, proceeding..."
           
@@ -244,27 +277,16 @@ jobs:
           
           echo "artifact_path=$ARCHIVE_NAME" >> $GITHUB_ENV
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Upload Release Assets
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ secrets.RELEASE_TOKEN }}
-          tag_name: ${{ needs.check-version.outputs.version_tag }}
-          name: QEMU ${{ needs.check-version.outputs.version_tag }} for Windows
-          body: |
-            **Automated Build**
-            - **Version:** ${{ needs.check-version.outputs.version_tag }}
-            - **Platform:** Windows x86_64 (MinGW64)
-            - **Optimization:** -O2 (Performance)
-            
-            **Contents:**
-            - `qemu-system-x86_64.exe`
-            - `qemu-img.exe`
-            - Required BIOS/Firmware for x86_64
-            - `NOTICE.txt` (Full build flags)
-          files: ${{ env.artifact_path }}
+          name: release-assets-windows
+          path: ${{ env.artifact_path }}
+          retention-days: 1
+
 
   build-and-release-macos:
-    needs: check-version
+    needs: [check-version, download-source]
     if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
@@ -293,6 +315,12 @@ jobs:
           key: ccache-macos-${{ matrix.arch }}-${{ github.sha }}
           restore-keys: ccache-macos-${{ matrix.arch }}-
 
+      - name: Download Source Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: qemu-source
+          path: .
+
       - name: Download and Configure
         id: build-prep
         env:
@@ -309,8 +337,7 @@ jobs:
           export CXX="ccache clang++"
           export OBJC="ccache clang"
 
-          URL="https://download.qemu.org/qemu-${VERSION}.tar.xz"
-          wget -q "$URL" -O qemu-source.tar.xz
+          # Source downloaded from artifact
           
           tar -xf qemu-source.tar.xz --exclude="*/roms/*" --exclude="*/tests/lcitool/*" || echo "Tar warning: Symlinks failed, proceeding..."
           
@@ -533,29 +560,18 @@ jobs:
           
           echo "artifact_path=$ARCHIVE_NAME" >> $GITHUB_ENV
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Upload Release Assets
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ secrets.RELEASE_TOKEN }}
-          tag_name: ${{ needs.check-version.outputs.version_tag }}
-          name: QEMU ${{ needs.check-version.outputs.version_tag }} for macOS/Windows
-          body: |
-            **Automated Build**
-            - **Version:** ${{ needs.check-version.outputs.version_tag }}
-            - **Platforms:** Windows x86_64, macOS x86_64 & aarch64
-            - **Optimization:** -O2
-            
-            **Contents:**
-            - `qemu-system-<arch>`
-            - `qemu-img`
-            - Bundled Firmware & libraries
-            - `NOTICE.txt`
-          files: ${{ env.artifact_path }}
+          name: release-assets-macos-${{ matrix.arch }}
+          path: ${{ env.artifact_path }}
+          retention-days: 1
+
 
   build-and-release-linux:
-    needs: check-version
+    needs: [check-version, download-source]
     if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       DEBIAN_FRONTEND: noninteractive
 
@@ -578,6 +594,12 @@ jobs:
           key: ccache-linux-x86_64-${{ github.sha }}
           restore-keys: ccache-linux-x86_64-
 
+      - name: Download Source Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: qemu-source
+          path: .
+
       - name: Download and Configure
         id: build-prep
         env:
@@ -593,8 +615,7 @@ jobs:
           export CC="ccache gcc"
           export CXX="ccache g++"
 
-          URL="https://download.qemu.org/qemu-${VERSION}.tar.xz"
-          wget -q "$URL" -O qemu-source.tar.xz
+          # Source downloaded from artifact
           
           tar -xf qemu-source.tar.xz --exclude="*/roms/*" --exclude="*/tests/lcitool/*" || echo "Tar warning: Symlinks failed, proceeding..."
           
@@ -763,21 +784,60 @@ jobs:
           
           echo "artifact_path=$ARCHIVE_NAME" >> $GITHUB_ENV
 
-      - name: Create Release
+      - name: Upload Release Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-linux
+          path: ${{ env.artifact_path }}
+          retention-days: 1
+
+  publish-release:
+    needs: [check-version, build-and-release-windows, build-and-release-macos, build-and-release-linux]
+    if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Get Date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Publish Release
         uses: softprops/action-gh-release@v1
         with:
           token: ${{ secrets.RELEASE_TOKEN }}
           tag_name: ${{ needs.check-version.outputs.version_tag }}
-          name: QEMU ${{ needs.check-version.outputs.version_tag }} for macOS/Windows/Linux
+          name: QEMU ${{ needs.check-version.outputs.version_tag }} (All Platforms)
           body: |
-            **Automated Build**
-            - **Version:** ${{ needs.check-version.outputs.version_tag }}
-            - **Platforms:** Windows, macOS, Linux
-            - **Optimization:** -O2
-            
-            **Contents:**
-            - `qemu-system-<arch>`
-            - `qemu-img`
-            - Bundled Firmware & libraries
-            - `NOTICE.txt`
-          files: ${{ env.artifact_path }}
+            # 🚀 QEMU ${{ needs.check-version.outputs.version_tag }} Release
+
+            Automated multi-platform build of QEMU ${{ needs.check-version.outputs.version_tag }} for Marten.
+
+            ## 📦 Downloads
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | **Windows** | x86_64 | `qemu-windows-x86_64-*.tar.zst` |
+            | **macOS** | x86_64 (Intel) | `qemu-macos-x86_64-*.tar.zst` |
+            | **macOS** | aarch64 (Apple Silicon) | `qemu-macos-aarch64-*.tar.zst` |
+            | **Linux** | x86_64 | `qemu-linux-x86_64-*.tar.zst` |
+
+            ## 🛠️ Features
+            - **Optimization**: `-O2` for balanced performance.
+            - **Firmware**: Includes BIOS, UEFI (EDK2), and network boot ROMs.
+            - **Acceleration**:
+              - Windows: WHPX (Hyper-V)
+              - macOS: HVF (Hypervisor.framework)
+              - Linux: KVM
+
+            ```bash
+            tar -I zstd -xf qemu-*.tar.zst
+            ```
+
+            *Build Date: ${{ steps.date.outputs.date }}*
+          files: release-assets/**/*.tar.zst
+
