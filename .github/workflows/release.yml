@@ -30,6 +30,9 @@ jobs:
           VERSION_NUM="${UPSTREAM_TAG#v}"
           LOCAL_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "v0.0.0")
 
+          echo "Local Tag determined as: $LOCAL_TAG"
+          echo "Upstream Tag: $UPSTREAM_TAG"
+
           if [ "$UPSTREAM_TAG" != "$LOCAL_TAG" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
             echo "version_tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
@@ -393,7 +396,7 @@ jobs:
           
           echo "Copying firmware..."
           BIOS_SRC="$SRC_DIR/pc-bios"
-          RELEASE_SHARE="$RELEASE_DIR/share"
+          RELEASE_SHARE="$RELEASE_DIR/share/qemu"
           mkdir -p "$RELEASE_SHARE"
           
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
@@ -540,6 +543,236 @@ jobs:
             **Automated Build**
             - **Version:** ${{ needs.check-version.outputs.version_tag }}
             - **Platforms:** Windows x86_64, macOS x86_64 & aarch64
+            - **Optimization:** -O2
+            
+            **Contents:**
+            - `qemu-system-<arch>`
+            - `qemu-img`
+            - Bundled Firmware & libraries
+            - `NOTICE.txt`
+          files: ${{ env.artifact_path }}
+
+  build-and-release-linux:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential python3 ninja-build \
+            libglib2.0-dev libpixman-1-dev libslirp-dev \
+            pkg-config ccache libzstd-dev patchelf bzip2 \
+            libfdt-dev
+
+      - name: Restore CCache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-x86_64-${{ github.sha }}
+          restore-keys: ccache-linux-x86_64-
+
+      - name: Download and Configure
+        id: build-prep
+        env:
+          VERSION: ${{ needs.check-version.outputs.version_num }}
+        run: |
+          export CCACHE_DIR="$(pwd)/.ccache"
+          export CCACHE_COMPRESS=1
+          export CCACHE_MAXSIZE=500M
+          mkdir -p .ccache
+          echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
+          echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
+          
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+
+          URL="https://download.qemu.org/qemu-${VERSION}.tar.xz"
+          wget -q "$URL" -O qemu-source.tar.xz
+          
+          tar -xf qemu-source.tar.xz --exclude="*/roms/*" --exclude="*/tests/lcitool/*" || echo "Tar warning: Symlinks failed, proceeding..."
+          
+          mv "qemu-${VERSION}" qemu-src
+          
+          cd qemu-src
+          mkdir build
+          cd build
+          
+          INSTALL_DIR="$(pwd)/qemu-install"
+          
+          FLAGS="--prefix=$INSTALL_DIR \
+          --target-list=x86_64-softmmu \
+          --enable-kvm \
+          --enable-slirp \
+          --disable-user \
+          --disable-sdl \
+          --disable-gtk \
+          --disable-curses \
+          --disable-vnc \
+          --disable-gnutls \
+          --disable-glusterfs \
+          --disable-libnfs \
+          --disable-libiscsi \
+          --disable-rbd \
+          --disable-xen \
+          --disable-docs \
+          --disable-debug-info \
+          --disable-capstone \
+          --disable-libssh \
+          --disable-snappy \
+          --disable-bzip2 \
+          --disable-lzo \
+          --disable-zstd \
+          --disable-seccomp \
+          --disable-guest-agent \
+          --disable-vte \
+          --disable-spice \
+          --disable-curl \
+          --disable-smartcard \
+          --disable-usb-redir \
+          --disable-libusb \
+          --disable-opengl \
+          --disable-virglrenderer \
+          --disable-iconv \
+          --disable-dbus-display \
+          --disable-nettle \
+          --disable-hv-balloon \
+          --disable-png \
+          --extra-cflags=-O2 \
+          --extra-ldflags=-s"
+
+          echo "BUILD_FLAGS=$FLAGS" >> $GITHUB_ENV
+          
+          ../configure $FLAGS
+
+      - name: Build QEMU
+        run: |
+          cd qemu-src/build
+          ccache -z
+          ninja qemu-system-x86_64 -j$(nproc)
+          ninja qemu-img -j$(nproc)
+          ccache -s
+
+      - name: Package and Bundle
+        run: |
+          SRC_DIR="qemu-src"
+          BUILD_DIR="qemu-src/build"
+          RELEASE_DIR="qemu-release"
+          LICENSE_DIR="$RELEASE_DIR/licenses"
+          ARCHIVE_NAME="qemu-linux-x86_64-${{ needs.check-version.outputs.version_tag }}.tar.zst"
+          
+          echo "Preparing release dir..."
+          rm -rf "$RELEASE_DIR"
+          mkdir -p "$RELEASE_DIR/bin"
+          mkdir -p "$RELEASE_DIR/share/qemu"
+          mkdir -p "$RELEASE_DIR/lib"
+          mkdir -p "$LICENSE_DIR"
+
+          echo "Copying core binaries..."
+          cp "$BUILD_DIR/qemu-system-x86_64" "$RELEASE_DIR/bin/"
+          cp "$BUILD_DIR/qemu-img" "$RELEASE_DIR/bin/"
+          
+          echo "Copying firmware..."
+          BIOS_SRC="$SRC_DIR/pc-bios"
+          FIRMWARE_DIR="$RELEASE_DIR/share/qemu"
+          
+          # Basic BIOS/UEFI
+          cp "$BIOS_SRC/bios-256k.bin" "$FIRMWARE_DIR/"
+          cp "$BIOS_SRC/bios.bin" "$FIRMWARE_DIR/"
+          
+          # EDK2 (Compressed)
+          # Often upstream tarball has them compressed
+          cp "$BIOS_SRC/edk2-x86_64-code.fd.bz2" "$FIRMWARE_DIR/"
+          cp "$BIOS_SRC/edk2-i386-vars.fd.bz2" "$FIRMWARE_DIR/"
+          
+          # KVM/VAPIC
+          cp "$BIOS_SRC/kvmvapic.bin" "$FIRMWARE_DIR/"
+          cp "$BIOS_SRC/multiboot.bin" "$FIRMWARE_DIR/"
+          
+          # Linux Boot
+          cp "$BIOS_SRC/linuxboot.bin" "$FIRMWARE_DIR/"
+          cp "$BIOS_SRC/linuxboot_dma.bin" "$FIRMWARE_DIR/"
+          
+          # VGA BIOSes
+          cp "$BIOS_SRC"/vgabios*.bin "$FIRMWARE_DIR/"
+          
+          # Network Boot (PXE/EFI)
+          cp "$BIOS_SRC"/efi-*.rom "$FIRMWARE_DIR/"
+          cp "$BIOS_SRC"/pxe-*.rom "$FIRMWARE_DIR/"
+          
+          # Decompress any bz2 files
+          if ls "$FIRMWARE_DIR"/*.bz2 1> /dev/null 2>&1; then
+            bzip2 -d "$FIRMWARE_DIR"/*.bz2
+          fi
+
+          echo "Bundling Dependencies..."
+          LIBS_DIR="$RELEASE_DIR/lib"
+          
+          bundle_deps() {
+             local BIN="$1"
+             echo "Processing $BIN..."
+             # Get dependencies, exclude vdso, linux-vdso, ld-linux, etc.
+             DEPS=$(ldd "$BIN" | awk '{print $3}' | grep "^/" | grep -v "ld-linux")
+             
+             for LIB in $DEPS; do
+                 LIB_NAME=$(basename "$LIB")
+                 TARGET_LIB="$LIBS_DIR/$LIB_NAME"
+                 
+                 if [ ! -f "$TARGET_LIB" ]; then
+                     echo "  Bundling $LIB_NAME..."
+                     cp -L "$LIB" "$TARGET_LIB"
+                 fi
+             done
+             
+             echo "  Patching RPATH..."
+             patchelf --set-rpath '$ORIGIN/../lib' "$BIN"
+          }
+          
+          bundle_deps "$RELEASE_DIR/bin/qemu-system-x86_64"
+          bundle_deps "$RELEASE_DIR/bin/qemu-img"
+
+          NOTICE_FILE="$RELEASE_DIR/NOTICE.txt"
+          echo "QEMU Linux Release" > "$NOTICE_FILE"
+          echo "Version: ${{ needs.check-version.outputs.version_tag }}" >> "$NOTICE_FILE"
+          echo "Build Date: $(date)" >> "$NOTICE_FILE"
+          echo "Architecture: x86_64" >> "$NOTICE_FILE"
+          echo "----------------------------------------" >> "$NOTICE_FILE"
+          echo "Build Configuration:" >> "$NOTICE_FILE"
+          echo "${{ env.BUILD_FLAGS }}" >> "$NOTICE_FILE"
+          echo "----------------------------------------" >> "$NOTICE_FILE"
+          echo "Compiler Version:" >> "$NOTICE_FILE"
+          gcc --version | head -n 1 >> "$NOTICE_FILE"
+          echo "" >> "$NOTICE_FILE"
+          echo "Licensing: GPL/LGPL" >> "$NOTICE_FILE"
+          
+          echo "Collecting Licenses..."
+          [ -f "$SRC_DIR/COPYING" ] && cp "$SRC_DIR/COPYING" "$LICENSE_DIR/QEMU_COPYING.txt"
+          [ -f "$SRC_DIR/COPYING.LIB" ] && cp "$SRC_DIR/COPYING.LIB" "$LICENSE_DIR/QEMU_COPYING.LIB.txt"
+          [ -f "$SRC_DIR/LICENSE" ] && cp "$SRC_DIR/LICENSE" "$LICENSE_DIR/QEMU_LICENSE.txt"
+          cp "LICENSE" "$LICENSE_DIR/BUILD_REPO_LICENSE.txt" || true
+          cp "README.md" "$RELEASE_DIR/" || true
+
+          echo "Compressing..."
+          tar -C "$RELEASE_DIR" -cf - . | zstd -19 -T0 -o "$ARCHIVE_NAME"
+          
+          echo "artifact_path=$ARCHIVE_NAME" >> $GITHUB_ENV
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          tag_name: ${{ needs.check-version.outputs.version_tag }}
+          name: QEMU ${{ needs.check-version.outputs.version_tag }} for macOS/Windows/Linux
+          body: |
+            **Automated Build**
+            - **Version:** ${{ needs.check-version.outputs.version_tag }}
+            - **Platforms:** Windows, macOS, Linux
             - **Optimization:** -O2
             
             **Contents:**
