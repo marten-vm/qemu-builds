@@ -476,7 +476,7 @@ jobs:
           # Function to bundle dylibs
           bundle_libs() {
             local BINARY="$1"
-            echo "Bundling libs for $BINARY"
+            echo "Processing Binary: $BINARY"
             
             # Ensure binary is writable for install_name_tool
             chmod u+w "$BINARY"
@@ -490,6 +490,8 @@ jobs:
             for LIB in $LIBS; do
               LIB_NAME=$(basename "$LIB")
               TARGET_LIB="$RELEASE_DIR/$LIB_NAME"
+              
+              echo "  Found Link: $LIB"
               
               # Resolve real path for the library
               local REAL_LIB=""
@@ -523,17 +525,22 @@ jobs:
 
               if [ -n "$REAL_LIB" ]; then
                   if [ ! -f "$TARGET_LIB" ]; then
-                    echo "  Copying $LIB_NAME from $REAL_LIB..."
+                    echo "    Copying $LIB_NAME from $REAL_LIB..."
                     cp -L "$REAL_LIB" "$TARGET_LIB"
-                    chmod +w "$TARGET_LIB"
+                    chmod u+w "$TARGET_LIB" # Make the new lib writable
                     
                     # Recursively process this new lib
                     bundle_libs "$TARGET_LIB"
                   fi
                   
                   # Re-link the binary/lib to use the local copy
-                  echo "  Re-linking $LIB_NAME in $(basename $BINARY)"
-                  install_name_tool -change "$LIB" "@executable_path/$LIB_NAME" "$BINARY"
+                  echo "    Run: install_name_tool -change $LIB @executable_path/$LIB_NAME $(basename $BINARY)"
+                  if install_name_tool -change "$LIB" "@executable_path/$LIB_NAME" "$BINARY"; then
+                      echo "    Success."
+                  else
+                      echo "    FAILED to patch $LIB_NAME in $BINARY"
+                      exit 1
+                  fi
               else
                   echo "  WARNING: Could not resolve library: $LIB"
               fi
