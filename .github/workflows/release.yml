@@ -584,10 +584,16 @@ jobs:
           </plist>
           EOF
           
-          # Sign all dylibs and executables with entitlements
-          find "$RELEASE_DIR" -type f \( -name "*.dylib" -o -perm +111 \) -print0 | while IFS= read -r -d '' file; do
-              echo "Signing $file..."
-              codesign --force --deep --sign - --entitlements entitlements.plist --options runtime --timestamp "$file"
+          # Sign dylibs (No entitlements needed for libs, but timestamp is good)
+          find "$RELEASE_DIR" -name "*.dylib" -print0 | while IFS= read -r -d '' file; do
+              echo "Signing Library: $file"
+              codesign --force --sign - --timestamp "$file"
+          done
+          
+          # Sign executables (With entitlements and runtime)
+          find "$RELEASE_DIR" -type f -perm +111 ! -name "*.dylib" -print0 | while IFS= read -r -d '' file; do
+              echo "Signing Executable: $file"
+              codesign --force --sign - --entitlements entitlements.plist --options runtime --timestamp "$file"
           done
 
           echo "Collecting Licenses..."
