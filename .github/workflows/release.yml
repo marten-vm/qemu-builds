@@ -353,7 +353,8 @@ jobs:
           FLAGS="--prefix=$INSTALL_DIR \
           --target-list=${{ matrix.target }} \
           --extra-cflags=-O2 \
-          --extra-ldflags=\"-s -headerpad_max_install_names\" \
+          --extra-ldflags=-s \
+          --extra-ldflags=-headerpad_max_install_names \
           --enable-hvf \
           --enable-slirp \
           --disable-cocoa \
