@@ -839,6 +839,43 @@ jobs:
           path: ${{ env.artifact_path }}
           retention-days: 1
 
+  test-release-macos:
+    needs: build-and-release-macos
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x86_64
+          - os: macos-latest
+            arch: aarch64
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-macos-${{ matrix.arch }}
+          path: .
+
+      - name: Install Dependencies
+        run: brew install zstd
+
+      - name: Verify Bundle
+        run: |
+          mkdir qemu-test
+          tar -I zstd -xf *.tar.zst -C qemu-test
+          cd qemu-test
+          
+          echo "Checking linkage..."
+          otool -L qemu-system-${{ matrix.arch }}
+          
+          echo "Verifying Code Signature..."
+          codesign -dv -r- qemu-system-${{ matrix.arch }}
+          codesign -d --entitlements - qemu-system-${{ matrix.arch }}
+          
+          echo "Running --version..."
+          ./qemu-system-${{ matrix.arch }} --version
+
+
   publish-release:
     needs: [check-version, build-and-release-windows, build-and-release-macos, build-and-release-linux]
     if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
