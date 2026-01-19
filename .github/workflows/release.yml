@@ -353,7 +353,7 @@ jobs:
           FLAGS="--prefix=$INSTALL_DIR \
           --target-list=${{ matrix.target }} \
           --extra-cflags=-O2 \
-          --extra-ldflags=-s \
+          --extra-ldflags="-s -headerpad_max_install_names" \
           --enable-hvf \
           --enable-slirp \
           --disable-cocoa \
@@ -476,6 +476,9 @@ jobs:
           bundle_libs() {
             local BINARY="$1"
             echo "Bundling libs for $BINARY"
+            
+            # Ensure RPATH includes executable path so @rpath loads work
+            install_name_tool -add_rpath "@executable_path" "$BINARY" 2>/dev/null || true
             
             # Get list of non-system libs
             LIBS=$(otool -L "$BINARY" | awk '{print $1}' | grep -vE "^/usr/lib|^/System/Library|^@executable_path" | sort -u)
