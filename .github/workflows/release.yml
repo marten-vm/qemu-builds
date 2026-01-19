@@ -490,6 +490,9 @@ jobs:
               # Check local install first (handles internal libs like libslirp)
               if [ -f "$(pwd)/qemu-install/lib/$LIB_NAME" ]; then
                   REAL_LIB="$(pwd)/qemu-install/lib/$LIB_NAME"
+              # Fallback: Search in build dir (e.g. subprojects/slirp)
+              elif [ -n "$(find "$BUILD_DIR" -name "$LIB_NAME" -print -quit 2>/dev/null)" ]; then
+                  REAL_LIB="$(find "$BUILD_DIR" -name "$LIB_NAME" -print -quit 2>/dev/null)"
               elif [[ "$LIB" == @rpath* ]]; then
                  # Attempt to find the lib in standard brew locations or install dir
                  local RAW_NAME="${LIB#@rpath/}"
