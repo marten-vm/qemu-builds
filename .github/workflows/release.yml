@@ -240,9 +240,8 @@ jobs:
           cp "$BIOS_SRC/vgabios-vmware.bin" "$RELEASE_SHARE/"
           
           # Network Boot (PXE/EFI)
-          cp "$BIOS_SRC/efi-e1000.rom" "$RELEASE_SHARE/"
-          cp "$BIOS_SRC/pxe-e1000.rom" "$RELEASE_SHARE/"
-          cp "$BIOS_SRC/pxe-virtio.rom" "$RELEASE_SHARE/"
+          cp "$BIOS_SRC"/efi-*.rom "$RELEASE_SHARE/"
+          cp "$BIOS_SRC"/pxe-*.rom "$RELEASE_SHARE/"
 
           NOTICE_FILE="$RELEASE_DIR/NOTICE.txt"
           echo "QEMU Windows Release" > "$NOTICE_FILE"
@@ -265,6 +264,8 @@ jobs:
           cp /mingw64/bin/libgcc_s_seh-1.dll \
              /mingw64/bin/libstdc++-6.dll \
              /mingw64/bin/libwinpthread-1.dll \
+             /mingw64/bin/libslirp-0.dll \
+             /mingw64/bin/zlib1.dll \
              "$RELEASE_DIR/" 2>/dev/null || true
 
           echo "Collecting Licenses..."
@@ -400,6 +401,8 @@ jobs:
           ccache -z
           ninja qemu-system-${{ matrix.arch }} -j$(sysctl -n hw.ncpu)
           ninja qemu-img -j$(sysctl -n hw.ncpu)
+          # Install to qemu-install so we can find libslirp and other internal libs
+          ninja install
           ccache -s
 
       - name: Package and Bundle
@@ -484,7 +487,10 @@ jobs:
               # Resolve real path for the library
               local REAL_LIB=""
               
-              if [[ "$LIB" == @rpath* ]]; then
+              # Check local install first (handles internal libs like libslirp)
+              if [ -f "$(pwd)/qemu-install/lib/$LIB_NAME" ]; then
+                  REAL_LIB="$(pwd)/qemu-install/lib/$LIB_NAME"
+              elif [[ "$LIB" == @rpath* ]]; then
                  # Attempt to find the lib in standard brew locations or install dir
                  local RAW_NAME="${LIB#@rpath/}"
                  # Try to find it in brew lib
@@ -493,8 +499,6 @@ jobs:
                     REAL_LIB="$BREW_PREFIX/lib/$RAW_NAME"
                  elif [ -f "$BREW_PREFIX/opt/$RAW_NAME" ]; then # Some might be in opt
                     REAL_LIB="$BREW_PREFIX/opt/$RAW_NAME"
-                 elif [ -f "$(pwd)/qemu-install/lib/$RAW_NAME" ]; then # local install
-                     REAL_LIB="$(pwd)/qemu-install/lib/$RAW_NAME"
                  fi
               else
                  # Absolute path or relative path
