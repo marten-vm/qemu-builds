@@ -556,8 +556,29 @@ jobs:
           # Strip extended attributes to avoid 'resource fork' errors
           xattr -cr "$RELEASE_DIR"
           
-          # Sign all dylibs and executables
-          find "$RELEASE_DIR" -type f \( -name "*.dylib" -o -perm +111 \) -exec codesign --force -s - {} +
+          # Create entitlements to allow loading ad-hoc libraries
+          cat > entitlements.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.cs.allow-jit</key>
+              <true/>
+              <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+              <true/>
+              <key>com.apple.security.cs.disable-library-validation</key>
+              <true/>
+              <key>com.apple.security.get-task-allow</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+          
+          # Sign all dylibs and executables with entitlements
+          find "$RELEASE_DIR" -type f \( -name "*.dylib" -o -perm +111 \) -print0 | while IFS= read -r -d '' file; do
+              echo "Signing $file..."
+              codesign --force --deep --sign - --entitlements entitlements.plist "$file"
+          done
 
           echo "Collecting Licenses..."
           [ -f "$SRC_DIR/COPYING" ] && cp "$SRC_DIR/COPYING" "$LICENSE_DIR/QEMU_COPYING.txt"
