@@ -862,7 +862,7 @@ jobs:
       - name: Verify Bundle
         run: |
           mkdir qemu-test
-          tar -I zstd -xf *.tar.zst -C qemu-test
+          zstd -d -c *.tar.zst | tar -xf - -C qemu-test
           cd qemu-test
           
           echo "Checking linkage..."
