@@ -476,6 +476,8 @@ jobs:
           # Function to bundle dylibs
           bundle_libs() {
             local BINARY="$1"
+            local LIBS LIB LIB_NAME TARGET_LIB REAL_LIB RAW_NAME BREW_PREFIX
+            
             echo "Processing Binary: $BINARY"
             
             # Ensure binary is writable for install_name_tool
