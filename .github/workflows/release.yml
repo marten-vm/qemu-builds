@@ -416,14 +416,11 @@ jobs:
           
           echo "Preparing release dir..."
           rm -rf "$RELEASE_DIR"
-          mkdir -p "$RELEASE_DIR" "$LICENSE_DIR"
+          mkdir -p "$RELEASE_DIR/bin" "$LICENSE_DIR"
 
           echo "Copying core binaries..."
-          cp "$BUILD_DIR/qemu-system-${{ matrix.arch }}" "$RELEASE_DIR/"
-          cp "$BUILD_DIR/qemu-img" "$RELEASE_DIR/"
-          
-          echo "Copying firmware..."
-          BIOS_SRC="$SRC_DIR/pc-bios"
+          cp "$BUILD_DIR/qemu-system-${{ matrix.arch }}" "$RELEASE_DIR/bin/"
+          cp "$BUILD_DIR/qemu-img" "$RELEASE_DIR/bin/"
           
           echo "Copying firmware..."
           BIOS_SRC="$SRC_DIR/pc-bios"
@@ -491,7 +488,7 @@ jobs:
             
             for LIB in $LIBS; do
               LIB_NAME=$(basename "$LIB")
-              TARGET_LIB="$RELEASE_DIR/$LIB_NAME"
+              TARGET_LIB="$RELEASE_DIR/bin/$LIB_NAME"
               
               echo "  Found Link: $LIB"
               
@@ -552,12 +549,12 @@ jobs:
 
           
           # Bundle for Executables
-          bundle_libs "$RELEASE_DIR/qemu-system-${{ matrix.arch }}"
-          bundle_libs "$RELEASE_DIR/qemu-img"
+          bundle_libs "$RELEASE_DIR/bin/qemu-system-${{ matrix.arch }}"
+          bundle_libs "$RELEASE_DIR/bin/qemu-img"
           
           # Fix ID of the libs themselves
           echo "Fixing Library IDs..."
-          for LIB in "$RELEASE_DIR"/*.dylib; do
+          for LIB in "$RELEASE_DIR/bin"/*.dylib; do
              if [ -f "$LIB" ]; then
                LIB_NAME=$(basename "$LIB")
                install_name_tool -id "@executable_path/$LIB_NAME" "$LIB"
@@ -581,6 +578,8 @@ jobs:
               <key>com.apple.security.cs.disable-library-validation</key>
               <true/>
               <key>com.apple.security.get-task-allow</key>
+              <true/>
+              <key>com.apple.security.hypervisor</key>
               <true/>
           </dict>
           </plist>
@@ -878,8 +877,34 @@ jobs:
           ./qemu-system-${{ matrix.arch }} --version
 
 
+  test-release-linux:
+    needs: build-and-release-linux
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-linux
+          path: .
+
+      - name: Install Dependencies
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Verify Bundle
+        run: |
+          mkdir qemu-test
+          zstd -d -c *.tar.zst | tar -xf - -C qemu-test
+          cd qemu-test/bin
+          
+          echo "Checking linkage..."
+          ldd qemu-system-x86_64
+          
+          echo "Running --version..."
+          ./qemu-system-x86_64 --version
+
+
   publish-release:
-    needs: [check-version, build-and-release-windows, build-and-release-macos, build-and-release-linux]
+    needs: [check-version, build-and-release-windows, test-release-macos, test-release-linux]
     if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
