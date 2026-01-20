@@ -864,7 +864,7 @@ jobs:
         run: |
           mkdir qemu-test
           zstd -d -c *.tar.zst | tar -xf - -C qemu-test
-          cd qemu-test
+          cd qemu-test/bin
           
           echo "Checking linkage..."
           otool -L qemu-system-${{ matrix.arch }}
